@@ -1,3 +1,5 @@
+from enum import IntEnum
+
 DEV_DEFAULT_VID = 0x04D8
 DEV_DEFAULT_PID = 0x00DD
 
@@ -39,24 +41,31 @@ FLASH_DATA_CHIP_SERIALNUM         = 0x05
 FLASH_OFFSET_WRITE = 2
 FLASH_OFFSET_READ  = 4
 
-FLASH_CHIP_SETTINGS_CDCSEC  =  2 - 2
-FLASH_CHIP_SETTINGS_CLOCK   =  3 - 2
-FLASH_CHIP_SETTINGS_DAC     =  4 - 2
-FLASH_CHIP_SETTINGS_INT_ADC =  5 - 2
-FLASH_CHIP_SETTINGS_LVID    =  6 - 2
-FLASH_CHIP_SETTINGS_HVID    =  7 - 2
-FLASH_CHIP_SETTINGS_LPID    =  8 - 2
-FLASH_CHIP_SETTINGS_HPID    =  9 - 2
-FLASH_CHIP_SETTINGS_USBPWR  = 10 - 2
-FLASH_CHIP_SETTINGS_USBMA   = 11 - 2
-FLASH_CHIP_SETTINGS_PWD1    = 12 - 2
-FLASH_CHIP_SETTINGS_PWD2    = 13 - 2
-FLASH_CHIP_SETTINGS_PWD3    = 14 - 2
-FLASH_CHIP_SETTINGS_PWD4    = 15 - 2
-FLASH_CHIP_SETTINGS_PWD5    = 16 - 2
-FLASH_CHIP_SETTINGS_PWD6    = 17 - 2
-FLASH_CHIP_SETTINGS_PWD7    = 18 - 2
-FLASH_CHIP_SETTINGS_PWD8    = 19 - 2
+class FlashChipSettings(IntEnum):
+   CDCSEC  =  2 - 2
+   CLOCK   =  3 - 2
+   DAC     =  4 - 2
+   INT_ADC =  5 - 2
+   LVID    =  6 - 2
+   HVID    =  7 - 2
+   LPID    =  8 - 2
+   HPID    =  9 - 2
+   USBPWR  = 10 - 2
+   USBMA   = 11 - 2
+   PWD1    = 12 - 2
+   PWD2    = 13 - 2
+   PWD3    = 14 - 2
+   PWD4    = 15 - 2
+   PWD5    = 16 - 2
+   PWD6    = 17 - 2
+   PWD7    = 18 - 2
+   PWD8    = 19 - 2
+
+
+class PasswordMode(IntEnum):
+    LOCKED = 0b10
+    PROTECTED = 0b01
+    UNPROTECTED = 0b00
 
 # Bytes in Flash GP Settings register (0-based)
 # Write and read are same order but different offsets
