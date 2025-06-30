@@ -62,7 +62,7 @@ class FlashChipSettings(IntEnum):
    PWD8    = 19 - 2
 
 
-class PasswordMode(IntEnum):
+class WriteProtection(IntEnum):
     LOCKED = 0b10
     PROTECTED = 0b01
     UNPROTECTED = 0b00

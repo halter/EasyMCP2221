@@ -332,24 +332,24 @@ class Device:
         if self.debug_messages:
             print("OLD CHIP:", " ".join("%02x" % i for i in chip))
 
-        chip[FLASH_CHIP_SETTINGS_CDCSEC]  = sram[SRAM_CHIP_SETTINGS_CDCSEC]
-        chip[FLASH_CHIP_SETTINGS_CLOCK]   = sram[SRAM_CHIP_SETTINGS_CLOCK]
-        chip[FLASH_CHIP_SETTINGS_DAC]     = sram[SRAM_CHIP_SETTINGS_DAC]
-        chip[FLASH_CHIP_SETTINGS_INT_ADC] = sram[SRAM_CHIP_SETTINGS_INT_ADC]
-        chip[FLASH_CHIP_SETTINGS_LVID]    = sram[SRAM_CHIP_SETTINGS_LVID]
-        chip[FLASH_CHIP_SETTINGS_HVID]    = sram[SRAM_CHIP_SETTINGS_HVID]
-        chip[FLASH_CHIP_SETTINGS_LPID]    = sram[SRAM_CHIP_SETTINGS_LPID]
-        chip[FLASH_CHIP_SETTINGS_HPID]    = sram[SRAM_CHIP_SETTINGS_HPID]
-        chip[FLASH_CHIP_SETTINGS_USBPWR]  = sram[SRAM_CHIP_SETTINGS_USBPWR]
-        chip[FLASH_CHIP_SETTINGS_USBMA]   = sram[SRAM_CHIP_SETTINGS_USBMA]
-        chip[FLASH_CHIP_SETTINGS_PWD1]    = sram[SRAM_CHIP_SETTINGS_PWD1]
-        chip[FLASH_CHIP_SETTINGS_PWD2]    = sram[SRAM_CHIP_SETTINGS_PWD2]
-        chip[FLASH_CHIP_SETTINGS_PWD3]    = sram[SRAM_CHIP_SETTINGS_PWD3]
-        chip[FLASH_CHIP_SETTINGS_PWD4]    = sram[SRAM_CHIP_SETTINGS_PWD4]
-        chip[FLASH_CHIP_SETTINGS_PWD5]    = sram[SRAM_CHIP_SETTINGS_PWD5]
-        chip[FLASH_CHIP_SETTINGS_PWD6]    = sram[SRAM_CHIP_SETTINGS_PWD6]
-        chip[FLASH_CHIP_SETTINGS_PWD7]    = sram[SRAM_CHIP_SETTINGS_PWD7]
-        chip[FLASH_CHIP_SETTINGS_PWD8]    = sram[SRAM_CHIP_SETTINGS_PWD8]
+        chip[FlashChipSettings.CDCSEC]  = sram[SRAM_CHIP_SETTINGS_CDCSEC]
+        chip[FlashChipSettings.CLOCK]   = sram[SRAM_CHIP_SETTINGS_CLOCK]
+        chip[FlashChipSettings.DAC]     = sram[SRAM_CHIP_SETTINGS_DAC]
+        chip[FlashChipSettings.INT_ADC] = sram[SRAM_CHIP_SETTINGS_INT_ADC]
+        chip[FlashChipSettings.LVID]    = sram[SRAM_CHIP_SETTINGS_LVID]
+        chip[FlashChipSettings.HVID]    = sram[SRAM_CHIP_SETTINGS_HVID]
+        chip[FlashChipSettings.LPID]    = sram[SRAM_CHIP_SETTINGS_LPID]
+        chip[FlashChipSettings.HPID]    = sram[SRAM_CHIP_SETTINGS_HPID]
+        chip[FlashChipSettings.USBPWR]  = sram[SRAM_CHIP_SETTINGS_USBPWR]
+        chip[FlashChipSettings.USBMA]   = sram[SRAM_CHIP_SETTINGS_USBMA]
+        chip[FlashChipSettings.PWD1]    = sram[SRAM_CHIP_SETTINGS_PWD1]
+        chip[FlashChipSettings.PWD2]    = sram[SRAM_CHIP_SETTINGS_PWD2]
+        chip[FlashChipSettings.PWD3]    = sram[SRAM_CHIP_SETTINGS_PWD3]
+        chip[FlashChipSettings.PWD4]    = sram[SRAM_CHIP_SETTINGS_PWD4]
+        chip[FlashChipSettings.PWD5]    = sram[SRAM_CHIP_SETTINGS_PWD5]
+        chip[FlashChipSettings.PWD6]    = sram[SRAM_CHIP_SETTINGS_PWD6]
+        chip[FlashChipSettings.PWD7]    = sram[SRAM_CHIP_SETTINGS_PWD7]
+        chip[FlashChipSettings.PWD8]    = sram[SRAM_CHIP_SETTINGS_PWD8]
 
         if self.debug_messages:
             print("NEW CHIP:", " ".join("%02x" % i for i in chip))
@@ -372,6 +372,9 @@ class Device:
 
     def get_chip_settings_contents(self) -> list[int]:
         return self._read_flash_raw(FLASH_DATA_CHIP_SETTINGS)
+
+    def get_gp_settings_contents(self) -> list[int]:
+        return self._read_flash_raw(FLASH_DATA_GP_SETTINGS)
     
     def get_sram_settings_contents(self) -> list[int]:
         '''the shows the same type of info as the chip settings, but not all of this is modifiable in sram.
@@ -398,7 +401,7 @@ class Device:
         self.update_chip_settings_contents(FlashChipSettings.HPID, split_value(pid)[1], password)
         self.reset()
 
-    def set_password_mode(self, mode: PasswordMode, password: bytes) -> None:
+    def set_password_mode(self, mode: WriteProtection, password: bytes) -> None:
         '''Password must be 8 bytes long. '''
         chip_settings = self._read_flash_raw(FLASH_DATA_CHIP_SETTINGS)
         current_cdc_sec_byte = chip_settings[FlashChipSettings.CDCSEC.value]
@@ -546,45 +549,45 @@ class Device:
         return str
 
     def _parse_chip_settings_struct(self, buf):
-        vid = (buf[FLASH_CHIP_SETTINGS_HVID + FLASH_OFFSET_READ] << 8) \
-            +  buf[FLASH_CHIP_SETTINGS_LVID + FLASH_OFFSET_READ]
+        vid = (buf[FlashChipSettings.HVID + FLASH_OFFSET_READ] << 8) \
+            +  buf[FlashChipSettings.LVID + FLASH_OFFSET_READ]
 
-        pid = (buf[FLASH_CHIP_SETTINGS_HPID + FLASH_OFFSET_READ] << 8) \
-            +  buf[FLASH_CHIP_SETTINGS_LPID + FLASH_OFFSET_READ]
+        pid = (buf[FlashChipSettings.HPID + FLASH_OFFSET_READ] << 8) \
+            +  buf[FlashChipSettings.LPID + FLASH_OFFSET_READ]
 
-        mA = buf[FLASH_CHIP_SETTINGS_USBMA + FLASH_OFFSET_READ] * 2
+        mA = buf[FlashChipSettings.USBMA + FLASH_OFFSET_READ] * 2
 
-        if buf[FLASH_CHIP_SETTINGS_USBPWR + FLASH_OFFSET_READ] & 0b00100000:
+        if buf[FlashChipSettings.USBPWR + FLASH_OFFSET_READ] & 0b00100000:
             pmo_str = "enabled"
         else:
             pmo_str = "disabled"
 
-        if buf[FLASH_CHIP_SETTINGS_CDCSEC + FLASH_OFFSET_READ] & CDCSEC_CDCSNEN:
+        if buf[FlashChipSettings.CDCSEC + FLASH_OFFSET_READ] & CDCSEC_CDCSNEN:
             cdc_str = "enabled"
         else:
             cdc_str = "disabled"
 
-        ide_bits = (buf[FLASH_CHIP_SETTINGS_INT_ADC + FLASH_OFFSET_READ] & 0b01100000) >> 5
+        ide_bits = (buf[FlashChipSettings.INT_ADC + FLASH_OFFSET_READ] & 0b01100000) >> 5
         ide_str = ("both"    if ide_bits == 3 else
                    "falling" if ide_bits == 2 else
                    "rising"  if ide_bits == 1 else
                    "none")
 
-        ADCREF = (buf[FLASH_CHIP_SETTINGS_INT_ADC + FLASH_OFFSET_READ] & 0b00000100) >> 2
-        ADCVRM = (buf[FLASH_CHIP_SETTINGS_INT_ADC + FLASH_OFFSET_READ] & 0b00011000) >> 3
+        ADCREF = (buf[FlashChipSettings.INT_ADC + FLASH_OFFSET_READ] & 0b00000100) >> 2
+        ADCVRM = (buf[FlashChipSettings.INT_ADC + FLASH_OFFSET_READ] & 0b00011000) >> 3
         adc_ref_str = ("VDD"    if ADCREF == 0 else
                        "1.024V" if ADCVRM == 0b01 else
                        "2.048V" if ADCVRM == 0b10 else
                        "4.096V" if ADCVRM == 0b11 else
                        "OFF")
 
-        CLKDC  = (buf[FLASH_CHIP_SETTINGS_CLOCK + FLASH_OFFSET_READ] & 0b00011000) >> 3
+        CLKDC  = (buf[FlashChipSettings.CLOCK + FLASH_OFFSET_READ] & 0b00011000) >> 3
         clk_dc_str = (75 if CLKDC == 0b11 else
                       50 if CLKDC == 0b10 else
                       25 if CLKDC == 0b01 else
                       0)
 
-        CLKDIV = (buf[FLASH_CHIP_SETTINGS_CLOCK + FLASH_OFFSET_READ] & 0b00000111) >> 0
+        CLKDIV = (buf[FlashChipSettings.CLOCK + FLASH_OFFSET_READ] & 0b00000111) >> 0
         clk_freq_str = ("375kHz" if CLKDIV == 0b111 else
                         "750kHz" if CLKDIV == 0b110 else
                         "1.5MHz" if CLKDIV == 0b101 else
@@ -594,15 +597,15 @@ class Device:
                         "24MHz"  if CLKDIV == 0b001 else
                         "reserved")
 
-        DACREF = (buf[FLASH_CHIP_SETTINGS_DAC + FLASH_OFFSET_READ] & 0b00100000) >> 5
-        DACVRM = (buf[FLASH_CHIP_SETTINGS_DAC + FLASH_OFFSET_READ] & 0b11000000) >> 6
+        DACREF = (buf[FlashChipSettings.DAC + FLASH_OFFSET_READ] & 0b00100000) >> 5
+        DACVRM = (buf[FlashChipSettings.DAC + FLASH_OFFSET_READ] & 0b11000000) >> 6
         dac_ref_str = ("VDD"    if DACREF == 0 else
                        "1.024V" if DACVRM == 0b01 else
                        "2.048V" if DACVRM == 0b10 else
                        "4.096V" if DACVRM == 0b11 else
                        "OFF")
 
-        DACVAL = (buf[FLASH_CHIP_SETTINGS_DAC + FLASH_OFFSET_READ] & 0b00011111) >> 0
+        DACVAL = (buf[FlashChipSettings.DAC + FLASH_OFFSET_READ] & 0b00011111) >> 0
 
 
         data = {
@@ -2391,14 +2394,14 @@ class Device:
             >>> mcp.reset()
         """
         chip_settings = self._read_flash_raw(FLASH_DATA_CHIP_SETTINGS)
-        USBPWRATTR = chip_settings[FLASH_CHIP_SETTINGS_USBPWR + FLASH_OFFSET_READ]
+        USBPWRATTR = chip_settings[FlashChipSettings.USBPWR + FLASH_OFFSET_READ]
 
         if enable:
             USBPWRATTR |= 0b00100000
         else:
             USBPWRATTR &= 0b11011111
 
-        self.unsaved_SRAM[FLASH_CHIP_SETTINGS_USBPWR] = USBPWRATTR
+        self.unsaved_SRAM[FlashChipSettings.USBPWR] = USBPWRATTR
 
 
     def enable_cdc_serial(self, enable=True):
@@ -2450,14 +2453,14 @@ class Device:
 
         """
         chip_settings = self._read_flash_raw(FLASH_DATA_CHIP_SETTINGS)
-        cdcsec = chip_settings[FLASH_CHIP_SETTINGS_CDCSEC + FLASH_OFFSET_READ]
+        cdcsec = chip_settings[FlashChipSettings.CDCSEC + FLASH_OFFSET_READ]
 
         if enable:
             cdcsec |= CDCSEC_CDCSNEN
         else:
             cdcsec &= (~CDCSEC_CDCSNEN & 0xFF)
 
-        self.unsaved_SRAM[FLASH_CHIP_SETTINGS_CDCSEC] = cdcsec
+        self.unsaved_SRAM[FlashChipSettings.CDCSEC] = cdcsec
 
 
     #######################################################################
