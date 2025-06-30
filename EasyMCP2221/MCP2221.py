@@ -294,7 +294,7 @@ class Device:
     #######################################################################
     # Flash
     #######################################################################
-    def save_config(self):
+    def save_config(self, password: bytes):
         """
         Write current status (pin assignments, GPIO output values,
         DAC reference and value, ADC reference, etc.) to flash memory.
@@ -367,8 +367,8 @@ class Device:
         if self.debug_messages:
             print("NEW GP:", " ".join("%02x" % i for i in gp))
 
-        self._write_flash_raw(FLASH_DATA_CHIP_SETTINGS, chip)
-        self._write_flash_raw(FLASH_DATA_GP_SETTINGS,   gp)
+        self._write_flash_raw(FLASH_DATA_CHIP_SETTINGS, chip, password)
+        self._write_flash_raw(FLASH_DATA_GP_SETTINGS,   gp, password)
 
     def get_chip_settings_contents(self) -> list[int]:
         return self._read_flash_raw(FLASH_DATA_CHIP_SETTINGS)
@@ -388,7 +388,7 @@ class Device:
         chip = self._read_flash_raw(FLASH_DATA_CHIP_SETTINGS)
         chip = chip[4:14]
         chip[setting.value] =  value
-        self._write_flash_raw(FLASH_DATA_CHIP_SETTINGS, chip, password=password)
+        self._write_flash_raw(FLASH_DATA_CHIP_SETTINGS, chip, password)
 
     def set_vid_pid(self, vid: int, pid: int, password: bytes) -> None:
         def split_value(value: int) -> tuple[int, int]:
@@ -421,7 +421,7 @@ class Device:
 
         return rbuf[0:64]
 
-    def _write_flash_raw(self, setting, data, password: bytes = b'\x00' * 8):
+    def _write_flash_raw(self, setting, data, password: bytes):
         """
         Write flash data.
         Data payload does not include command and register bytes.
