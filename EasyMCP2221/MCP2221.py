@@ -370,21 +370,23 @@ class Device:
         self._write_flash_raw(FLASH_DATA_CHIP_SETTINGS, chip, password)
         self._write_flash_raw(FLASH_DATA_GP_SETTINGS,   gp, password)
 
-    def get_chip_settings_contents(self) -> list[int]:
+    def get_chip_settings(self) -> list[int]:
         return self._read_flash_raw(FLASH_DATA_CHIP_SETTINGS)
 
-    def get_gp_settings_contents(self) -> list[int]:
+    def get_gp_settings(self) -> list[int]:
         return self._read_flash_raw(FLASH_DATA_GP_SETTINGS)
     
-    def get_sram_settings_contents(self) -> list[int]:
-        '''the shows the same type of info as the chip settings, but not all of this is modifiable in sram.
+    def get_sram_settings(self) -> list[int]:
+        '''this shows the same type of info as the chip settings (values may differ), but not all of this is modifiable in sram.
         Some of it can only be modified in flash. Compare the 'Get SRAM Settings' vs 'Set SRAM Settings' commands.'''
         sram = self.send_cmd([CMD_GET_SRAM_SETTINGS])
         if not sram:
             raise RuntimeError("Failed to read SRAM settings.")
         return sram
 
-    def update_chip_settings_contents(self, setting: FlashChipSettings, value: int, password: bytes) -> None:
+    def update_chip_settings(self, setting: FlashChipSettings, value: int, password: bytes) -> None:
+        '''This writes the whole BYTE index of the specified FlashChipSetting, not just a bit, so be careful of overwriting
+        While some byte indexes are concerned with just one setting, others have multiple'''
         chip = self._read_flash_raw(FLASH_DATA_CHIP_SETTINGS)
         chip = chip[4:14]
         chip[setting.value] =  value
@@ -392,7 +394,7 @@ class Device:
 
     def set_vid_pid(self, vid: int, pid: int, password: bytes) -> None:
         def split_value(value: int) -> tuple[int, int]:
-            '''returns blocks like (lower, higher)'''
+            '''split a 2 byte value into two, 1 byte blocks (LSB, MSB)'''
             return value & 0xFF, (value >> 8) & 0xFF
 
         self.update_chip_settings_contents(FlashChipSettings.LVID, split_value(vid)[0], password)
@@ -401,13 +403,14 @@ class Device:
         self.update_chip_settings_contents(FlashChipSettings.HPID, split_value(pid)[1], password)
         self.reset()
 
-    def set_password_mode(self, mode: WriteProtection, password: bytes) -> None:
-        '''Password must be 8 bytes long. '''
+    def set_flash_protection(self, protection: WriteProtection, password: bytes) -> None:
+        '''Must supply an 8 byte password. Will be ignored if the chip is in UNPROTECTED mode. Use the specified
+        password for subsequent flash write operations'''
         chip_settings = self._read_flash_raw(FLASH_DATA_CHIP_SETTINGS)
         current_cdc_sec_byte = chip_settings[FlashChipSettings.CDCSEC.value]
         mask_clear_security_bits = 0b11111100
         new_value = current_cdc_sec_byte & mask_clear_security_bits
-        new_value = new_value | mode.value
+        new_value = new_value | protection.value
         self.update_chip_settings_contents(FlashChipSettings.CDCSEC, new_value, password)
 
     def _read_flash_raw(self, setting):
@@ -426,8 +429,8 @@ class Device:
         Write flash data.
         Data payload does not include command and register bytes.
         
-        If chip is set to PROTECTED MODE, the password must be provided. Use the same password which
-        was provided when the chip was set to PROTECTED MODE. If the chip is in NON-PROTECTED mode, then
+        If chip is set to PROTECTED mode, the password must be provided. Use the same password which
+        was provided when the chip was set to PROTECTED mode. If the chip is in NON-PROTECTED mode, then
         the password doesn't matter
         """
         if len(password) != 8:
