@@ -1,9 +1,9 @@
 import hid
 import time
 
-from .Constants import *
-from . import I2C_Slave
-from .exceptions import NotAckError, TimeoutError, LowSCLError, LowSDAError
+from Constants import *
+from I2C_Slave import I2C_Slave
+from exceptions import NotAckError, TimeoutError, LowSCLError, LowSDAError
 
 class Device:
     """ Creates a MCP2221(A) device instance.
@@ -2529,3 +2529,8 @@ class Device:
         }
 
         return data
+
+
+if __name__ == '__main__':
+    device = Device()
+    print(device.get_chip_settings())
