@@ -417,7 +417,6 @@ class Device:
         self.reset()
 
     def update_password(self, old_password: bytes, new_password: bytes) -> None:
-        self._send_flash_access_password(old_password)
         new_password_list = list(new_password)
         chip = self._read_flash_raw(FLASH_DATA_CHIP_SETTINGS)
         chip = chip[4:14]
@@ -446,10 +445,10 @@ class Device:
         was provided when the chip was set to PROTECTED mode. If the chip is in NON-PROTECTED mode, then
         the password doesn't matter
         """
-        if len(password) != 8:
-            raise ValueError(f"Expecting an 8-byte password, got {len(password)} bytes." )
-
-        self._send_flash_access_password(password)
+        try:
+            self._send_flash_access_password(password)  
+        except RuntimeError as e:
+            raise IncorrectPasswordError()
         rbuf = self.send_cmd([CMD_WRITE_FLASH_DATA, setting] + data)
         if not rbuf:
             raise ValueError("No response from device")
@@ -2558,8 +2557,8 @@ if __name__ == '__main__':
     device = Device(usbserial = '0005490020', VID=0X04D8, PID=0X00dd)
     device.reset()
     # pwd_resp = device._send_flash_access_password(b'\x00'*8)  # requires currentpassword to unlock (default is 8 zeroes)
-    # device.set_flash_protection(WriteProtection.PROTECTED, b'\x69'*8)  # update protection, can update password
+    device.set_flash_protection(WriteProtection.PROTECTED, b'\x00'*8)  # update protection, can update password
     # device.update_password(b'\x00'*8, b'\x69'*8)  # update password, can update protection
-    device.set_vid_pid(0x04D8, 0x00dd, b'\x00'*8)  # update VID and PID, can update password and protection
+    # device.set_vid_pid(0x04D8, 0x00dd, b'\x00'*8)  # update VID and PID, can update password and protection
     settings = device.get_chip_settings()
     print(f'Chip settings: {settings}')
