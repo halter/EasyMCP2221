@@ -233,6 +233,7 @@ class Device:
 
             # Write command
             command = [REPORT_NUM] + buf + padding
+            print(f'{command=}')
             try:
                 self.hidhandler.write([REPORT_NUM] + buf + padding)
             except OSError:
@@ -415,6 +416,16 @@ class Device:
         self.update_chip_settings(FlashChipSettings.CDCSEC, new_value, password)
         self.reset()
 
+    def update_password(self, old_password: bytes, new_password: bytes) -> None:
+        self._send_flash_access_password(old_password)
+        new_password_list = list(new_password)
+        chip = self._read_flash_raw(FLASH_DATA_CHIP_SETTINGS)
+        chip = chip[4:14]
+        chip = chip + new_password_list
+        print(f'chip contents:{chip}')
+        self._write_flash_raw(FLASH_DATA_CHIP_SETTINGS, chip, old_password)
+        self.reset()
+
     def _read_flash_raw(self, setting):
         """
         Read flash data and return a list of bytes.
@@ -438,7 +449,8 @@ class Device:
         if len(password) != 8:
             raise ValueError(f"Expecting an 8-byte password, got {len(password)} bytes." )
 
-        rbuf = self.send_cmd([CMD_WRITE_FLASH_DATA, setting] + data + list(password))
+        self._send_flash_access_password(password)
+        rbuf = self.send_cmd([CMD_WRITE_FLASH_DATA, setting] + data)
         if not rbuf:
             raise ValueError("No response from device")
 
@@ -447,11 +459,10 @@ class Device:
 
         return rbuf[0:64]
 
-    def send_flash_access_password(self, password: bytes) -> None:
+    def _send_flash_access_password(self, password: bytes) -> None:
         if len(password) != 8:
             raise ValueError(f"Expecting an 8-byte password, got {len(password)} bytes." )
         cmd = [CMD_SEND_FLASH_ACCESS_PASSWORD, 0] + list(password)
-        print(f"Sending flash access password: {cmd}")
         rbuf = self.send_cmd(cmd)
 
         if rbuf[RESPONSE_STATUS_BYTE] != RESPONSE_RESULT_OK:
@@ -2544,8 +2555,11 @@ class Device:
 
 
 if __name__ == '__main__':
-    device = Device(usbserial = '0005490020', VID=0X04D8, PID=0X00DD)
-    pwd_resp = device.send_flash_access_password(b'\x00'*8)  # requires currentpassword to unlock (default is 8 zeroes)
-    device.set_flash_protection(WriteProtection.UNPROTECTED, b'\x00'*8)  # update protection, can update password
+    device = Device(usbserial = '0005490020', VID=0X04D8, PID=0X00dd)
+    device.reset()
+    # pwd_resp = device._send_flash_access_password(b'\x00'*8)  # requires currentpassword to unlock (default is 8 zeroes)
+    # device.set_flash_protection(WriteProtection.PROTECTED, b'\x69'*8)  # update protection, can update password
+    # device.update_password(b'\x00'*8, b'\x69'*8)  # update password, can update protection
+    device.set_vid_pid(0x04D8, 0x00dd, b'\x00'*8)  # update VID and PID, can update password and protection
     settings = device.get_chip_settings()
     print(f'Chip settings: {settings}')
