@@ -232,6 +232,7 @@ class Device:
                 print("Command re-try", retry)
 
             # Write command
+            command = [REPORT_NUM] + buf + padding
             try:
                 self.hidhandler.write([REPORT_NUM] + buf + padding)
             except OSError:
@@ -397,10 +398,10 @@ class Device:
             '''split a 2 byte value into two, 1 byte blocks (LSB, MSB)'''
             return value & 0xFF, (value >> 8) & 0xFF
 
-        self.update_chip_settings_contents(FlashChipSettings.LVID, split_value(vid)[0], password)
-        self.update_chip_settings_contents(FlashChipSettings.HVID, split_value(vid)[1], password)
-        self.update_chip_settings_contents(FlashChipSettings.LPID, split_value(pid)[0], password)
-        self.update_chip_settings_contents(FlashChipSettings.HPID, split_value(pid)[1], password)
+        self.update_chip_settings(FlashChipSettings.LVID, split_value(vid)[0], password)
+        self.update_chip_settings(FlashChipSettings.HVID, split_value(vid)[1], password)
+        self.update_chip_settings(FlashChipSettings.LPID, split_value(pid)[0], password)
+        self.update_chip_settings(FlashChipSettings.HPID, split_value(pid)[1], password)
         self.reset()
 
     def set_flash_protection(self, protection: WriteProtection, password: bytes) -> None:
@@ -411,7 +412,8 @@ class Device:
         mask_clear_security_bits = 0b11111100
         new_value = current_cdc_sec_byte & mask_clear_security_bits
         new_value = new_value | protection.value
-        self.update_chip_settings_contents(FlashChipSettings.CDCSEC, new_value, password)
+        self.update_chip_settings(FlashChipSettings.CDCSEC, new_value, password)
+        self.reset()
 
     def _read_flash_raw(self, setting):
         """
@@ -424,7 +426,7 @@ class Device:
 
         return rbuf[0:64]
 
-    def _write_flash_raw(self, setting, data, password: bytes):
+    def _write_flash_raw(self, setting, data, password: bytes) -> list[int]:
         """
         Write flash data.
         Data payload does not include command and register bytes.
@@ -441,9 +443,19 @@ class Device:
             raise ValueError("No response from device")
 
         if rbuf[RESPONSE_STATUS_BYTE] != RESPONSE_RESULT_OK:
-            raise RuntimeError("Write flash data command failed.")
+            raise RuntimeError(f"Write flash data command failed with code {rbuf[RESPONSE_STATUS_BYTE]}.")
 
         return rbuf[0:64]
+
+    def send_flash_access_password(self, password: bytes) -> None:
+        if len(password) != 8:
+            raise ValueError(f"Expecting an 8-byte password, got {len(password)} bytes." )
+        cmd = [CMD_SEND_FLASH_ACCESS_PASSWORD, 0] + list(password)
+        print(f"Sending flash access password: {cmd}")
+        rbuf = self.send_cmd(cmd)
+
+        if rbuf[RESPONSE_STATUS_BYTE] != RESPONSE_RESULT_OK:
+            raise RuntimeError(f"Write flash data command failed with code {rbuf[RESPONSE_STATUS_BYTE]}.")
 
     def read_flash_info(self, raw=False, human=False):
         """ Read flash data.
@@ -2532,5 +2544,8 @@ class Device:
 
 
 if __name__ == '__main__':
-    device = Device()
-    print(device.get_chip_settings())
+    device = Device(usbserial = '0005490020', VID=0X04D8, PID=0X00DD)
+    pwd_resp = device.send_flash_access_password(b'\x00'*8)  # requires currentpassword to unlock (default is 8 zeroes)
+    device.set_flash_protection(WriteProtection.UNPROTECTED, b'\x00'*8)  # update protection, can update password
+    settings = device.get_chip_settings()
+    print(f'Chip settings: {settings}')
