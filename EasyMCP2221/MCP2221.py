@@ -3,8 +3,8 @@ import time
 
 from Constants import *
 from I2C_Slave import I2C_Slave
-from exceptions import NotAckError, TimeoutError, LowSCLError, LowSDAError
-
+from exceptions import NotAckError, TimeoutError, LowSCLError, LowSDAError, IncorrectPasswordError
+from typing import Optional
 class Device:
     """ Creates a MCP2221(A) device instance.
 
@@ -179,124 +179,75 @@ class Device:
         # GPIO_poll function has not been used.
         self.poll_data = None
 
+    def get_write_protection_status(self) -> WriteProtection:
+        cdcsec_value = self.get_named_chip_settings(FlashChipSettings.CDCSEC)
+        protection_bits = cdcsec_value & 0b00000011
+        if protection_bits == WriteProtection.UNPROTECTED.value:
+            return WriteProtection.UNPROTECTED
+        elif protection_bits == WriteProtection.PROTECTED.value:
+            return WriteProtection.PROTECTED
+        return WriteProtection.LOCKED
 
-    def __repr__(self):
-        import json
-        data = self.read_flash_info(human=True)
-        return json.dumps(data, indent=4, sort_keys=True)
+    def get_named_chip_settings(self, setting: FlashChipSettings) -> int: 
+        chip_settings = self.get_all_chip_settings()
+        chip_settings = chip_settings[4:14]
+        return chip_settings[setting.value]
 
+    def get_all_chip_settings(self) -> list[int]:
+        return self._read_flash_raw(FLASH_DATA_CHIP_SETTINGS)
 
-    def __del__(self):
-        """ Releases the device. """
-        self.hidhandler.close()
-        del self.hidhandler
+    def get_all_gp_settings(self) -> list[int]:
+        return self._read_flash_raw(FLASH_DATA_GP_SETTINGS)
+    
+    def get_all_sram_settings(self) -> list[int]:
+        '''this shows the same type of info as the chip settings (values may differ), but not all of this is modifiable in sram.
+        Some of it can only be modified in flash. Compare the 'Get SRAM Settings' vs 'Set SRAM Settings' commands.'''
+        sram = self.send_cmd([CMD_GET_SRAM_SETTINGS])
+        if not sram:
+            raise RuntimeError("Failed to read SRAM settings.")
+        return sram
 
+    def set_vid_pid(self, vid: int, pid: int, password: Optional[bytes] = None) -> None:
+        def split_value(value: int) -> tuple[int, int]:
+            '''split a 2 byte value into two, 1 byte blocks (LSB, MSB)'''
+            return value & 0xFF, (value >> 8) & 0xFF
 
-    def send_cmd(self, buf):
-        """ Write a raw USB command to device and get the response.
+        self.set_flash_chip_settings(FlashChipSettings.LVID, split_value(vid)[0], password)
+        self.set_flash_chip_settings(FlashChipSettings.HVID, split_value(vid)[1], password)
+        self.set_flash_chip_settings(FlashChipSettings.LPID, split_value(pid)[0], password)
+        self.set_flash_chip_settings(FlashChipSettings.HPID, split_value(pid)[1], password)
+        self.reset()
 
-        Write 64 bytes to the HID interface, starting by ``buf`` bytes.
-        Then read 64 bytes from HID and return them as a list.
-        In case of failure (USB read/write or command error) it will retry.
-        To prevent this, set :attr:`cmd_retries` to zero.
+    def set_flash_protection(self, protection: WriteProtection, password: Optional[bytes]= None) -> None:
+        '''Must supply an 8 byte password if already PROTECTED. Use the specifiedpassword for subsequent flash write operations'''
+        chip_settings = self._read_flash_raw(FLASH_DATA_CHIP_SETTINGS)
+        current_cdc_sec_byte = chip_settings[FlashChipSettings.CDCSEC.value]
+        mask_clear_security_bits = 0b11111100
+        new_value = current_cdc_sec_byte & mask_clear_security_bits
+        new_value = new_value | protection.value
+        self.set_flash_chip_settings(FlashChipSettings.CDCSEC, new_value, password)
+        self.reset()
 
-        Parameters:
-            buf (list of bytes): Full data to write, including command (64 bytes max).
+    def set_flash_protection_password(self, old_password: bytes, new_password: bytes) -> None:
+        new_password_list = list(new_password)
+        chip = self._read_flash_raw(FLASH_DATA_CHIP_SETTINGS)
+        chip = chip[4:14]
+        chip = chip + new_password_list
+        self._write_flash_raw(FLASH_DATA_CHIP_SETTINGS, chip, old_password)
+        self.reset()
 
-        Returns:
-            list of bytes: Full response data (64 bytes).
-
-        Example:
-            >>> from EasyMCP2221.Constants import *
-            >>> r = mcp.send_cmd([CMD_GET_GPIO_VALUES])
-            [81, 0, 238, 239, 238, 239, 238, 239, 238, 239, 0, 0, 0, ... 0, 0]
-
-        See also:
-            Class variables :attr:`cmd_retries`, :attr:`debug_messages` and :attr:`trace_packets`.
-
-        Hint:
-            The response does not wait until the actual command execution is finished. Instead, it is generated right after the device receives the command. So an error response might indicate:
-
-            - the most recent command is not valid
-            - the previous command finished with an error condition (case of I2C write).
-        """
-        if self.trace_packets:
-            print("CMD:", " ".join("%02x" % i for i in buf))
-
-        REPORT_NUM = 0x00
-        padding = [0x00] * (PACKET_SIZE - len(buf))
-
-        for retry in range(0, self.cmd_retries + 1):
-
-            if self.debug_messages and retry > 0:
-                print("Command re-try", retry)
-
-            # Write command
-            command = [REPORT_NUM] + buf + padding
-            print(f'{command=}')
-            try:
-                self.hidhandler.write([REPORT_NUM] + buf + padding)
-            except OSError:
-                if retry < self.cmd_retries:
-                    continue
-                else:
-                    raise
-
-            # This command does not return anything
-            if buf[0] == CMD_RESET_CHIP:
-                return None
-
-            # Read response
-            try:
-                # timeout 50 removed due to Issue
-                # https://github.com/electronicayciencia/EasyMCP2221/issues/7
-                r = self.hidhandler.read(PACKET_SIZE)
-            except OSError:
-                if retry < self.cmd_retries:
-                    continue
-                else:
-                    raise
-
-            if self.trace_packets:
-                print("RES:", " ".join("%02x" % i for i in r))
-
-            # Always return if the error is caused by non idempotent commands
-            if buf[0] not in (
-                CMD_READ_FLASH_DATA,
-                CMD_POLL_STATUS_SET_PARAMETERS,
-                CMD_SET_GPIO_OUTPUT_VALUES,
-                CMD_SET_SRAM_SETTINGS,
-                CMD_GET_SRAM_SETTINGS,
-                CMD_READ_FLASH_DATA,
-                CMD_WRITE_FLASH_DATA,
-                CMD_RESET_CHIP
-                ):
-                return r
-
-            # Return if ok
-            if r[RESPONSE_STATUS_BYTE] == RESPONSE_RESULT_OK:
-                return r
-            else:
-                if retry < self.cmd_retries:
-                    continue
-                else:
-                    return r
-
-        raise RuntimeError("Command failed.")
-
-
-    def _update_gp_setting_out(self, gp, out):
-        """Update the GP setting (like in SRAM setting) with output values from Set GPIO Output Values command."""
-        if out == True:
-            self.status["GPIO"][gp] = self.status["GPIO"][gp] | GPIO_OUT_VAL_1
-        else:
-            self.status["GPIO"][gp] = self.status["GPIO"][gp] & GPIO_OUT_VAL_0
-
+    def set_flash_chip_settings(self, setting: FlashChipSettings, value: int, password: Optional[bytes] = None) -> None:
+        '''This writes the whole BYTE index of the specified FlashChipSetting, not just a bit, so be careful of overwriting
+        While some byte indexes are concerned with just one setting, others have multiple'''
+        chip = self._read_flash_raw(FLASH_DATA_CHIP_SETTINGS)
+        chip = chip[4:14]
+        chip[setting.value] =  value
+        self._write_flash_raw(FLASH_DATA_CHIP_SETTINGS, chip, password)
 
     #######################################################################
     # Flash
     #######################################################################
-    def save_config(self, password: bytes):
+    def save_config(self, password: Optional[bytes] = None) -> None:
         """
         Write current status (pin assignments, GPIO output values,
         DAC reference and value, ADC reference, etc.) to flash memory.
@@ -368,62 +319,122 @@ class Device:
 
         if self.debug_messages:
             print("NEW GP:", " ".join("%02x" % i for i in gp))
+    
 
         self._write_flash_raw(FLASH_DATA_CHIP_SETTINGS, chip, password)
         self._write_flash_raw(FLASH_DATA_GP_SETTINGS,   gp, password)
 
-    def get_chip_settings(self) -> list[int]:
-        return self._read_flash_raw(FLASH_DATA_CHIP_SETTINGS)
 
-    def get_gp_settings(self) -> list[int]:
-        return self._read_flash_raw(FLASH_DATA_GP_SETTINGS)
-    
-    def get_sram_settings(self) -> list[int]:
-        '''this shows the same type of info as the chip settings (values may differ), but not all of this is modifiable in sram.
-        Some of it can only be modified in flash. Compare the 'Get SRAM Settings' vs 'Set SRAM Settings' commands.'''
-        sram = self.send_cmd([CMD_GET_SRAM_SETTINGS])
-        if not sram:
-            raise RuntimeError("Failed to read SRAM settings.")
-        return sram
+    def __repr__(self):
+        import json
+        data = self.read_flash_info(human=True)
+        return json.dumps(data, indent=4, sort_keys=True)
 
-    def update_chip_settings(self, setting: FlashChipSettings, value: int, password: bytes) -> None:
-        '''This writes the whole BYTE index of the specified FlashChipSetting, not just a bit, so be careful of overwriting
-        While some byte indexes are concerned with just one setting, others have multiple'''
-        chip = self._read_flash_raw(FLASH_DATA_CHIP_SETTINGS)
-        chip = chip[4:14]
-        chip[setting.value] =  value
-        self._write_flash_raw(FLASH_DATA_CHIP_SETTINGS, chip, password)
 
-    def set_vid_pid(self, vid: int, pid: int, password: bytes) -> None:
-        def split_value(value: int) -> tuple[int, int]:
-            '''split a 2 byte value into two, 1 byte blocks (LSB, MSB)'''
-            return value & 0xFF, (value >> 8) & 0xFF
+    def __del__(self):
+        """ Releases the device. """
+        self.hidhandler.close()
+        del self.hidhandler
 
-        self.update_chip_settings(FlashChipSettings.LVID, split_value(vid)[0], password)
-        self.update_chip_settings(FlashChipSettings.HVID, split_value(vid)[1], password)
-        self.update_chip_settings(FlashChipSettings.LPID, split_value(pid)[0], password)
-        self.update_chip_settings(FlashChipSettings.HPID, split_value(pid)[1], password)
-        self.reset()
 
-    def set_flash_protection(self, protection: WriteProtection, password: bytes) -> None:
-        '''Must supply an 8 byte password. Will be ignored if the chip is in UNPROTECTED mode. Use the specified
-        password for subsequent flash write operations'''
-        chip_settings = self._read_flash_raw(FLASH_DATA_CHIP_SETTINGS)
-        current_cdc_sec_byte = chip_settings[FlashChipSettings.CDCSEC.value]
-        mask_clear_security_bits = 0b11111100
-        new_value = current_cdc_sec_byte & mask_clear_security_bits
-        new_value = new_value | protection.value
-        self.update_chip_settings(FlashChipSettings.CDCSEC, new_value, password)
-        self.reset()
+    def send_cmd(self, buf):
+        """ Write a raw USB command to device and get the response.
 
-    def update_password(self, old_password: bytes, new_password: bytes) -> None:
-        new_password_list = list(new_password)
-        chip = self._read_flash_raw(FLASH_DATA_CHIP_SETTINGS)
-        chip = chip[4:14]
-        chip = chip + new_password_list
-        print(f'chip contents:{chip}')
-        self._write_flash_raw(FLASH_DATA_CHIP_SETTINGS, chip, old_password)
-        self.reset()
+        Write 64 bytes to the HID interface, starting by ``buf`` bytes.
+        Then read 64 bytes from HID and return them as a list.
+        In case of failure (USB read/write or command error) it will retry.
+        To prevent this, set :attr:`cmd_retries` to zero.
+
+        Parameters:
+            buf (list of bytes): Full data to write, including command (64 bytes max).
+
+        Returns:
+            list of bytes: Full response data (64 bytes).
+
+        Example:
+            >>> from EasyMCP2221.Constants import *
+            >>> r = mcp.send_cmd([CMD_GET_GPIO_VALUES])
+            [81, 0, 238, 239, 238, 239, 238, 239, 238, 239, 0, 0, 0, ... 0, 0]
+
+        See also:
+            Class variables :attr:`cmd_retries`, :attr:`debug_messages` and :attr:`trace_packets`.
+
+        Hint:
+            The response does not wait until the actual command execution is finished. Instead, it is generated right after the device receives the command. So an error response might indicate:
+
+            - the most recent command is not valid
+            - the previous command finished with an error condition (case of I2C write).
+        """
+        if self.trace_packets:
+            print("CMD:", " ".join("%02x" % i for i in buf))
+
+        REPORT_NUM = 0x00
+        padding = [0x00] * (PACKET_SIZE - len(buf))
+
+        for retry in range(0, self.cmd_retries + 1):
+
+            if self.debug_messages and retry > 0:
+                print("Command re-try", retry)
+
+            # Write command
+            command = [REPORT_NUM] + buf + padding
+            try:
+                self.hidhandler.write([REPORT_NUM] + buf + padding)
+            except OSError:
+                if retry < self.cmd_retries:
+                    continue
+                else:
+                    raise
+
+            # This command does not return anything
+            if buf[0] == CMD_RESET_CHIP:
+                return None
+
+            # Read response
+            try:
+                # timeout 50 removed due to Issue
+                # https://github.com/electronicayciencia/EasyMCP2221/issues/7
+                r = self.hidhandler.read(PACKET_SIZE)
+            except OSError:
+                if retry < self.cmd_retries:
+                    continue
+                else:
+                    raise
+
+            if self.trace_packets:
+                print("RES:", " ".join("%02x" % i for i in r))
+
+            # Always return if the error is caused by non idempotent commands
+            if buf[0] not in (
+                CMD_READ_FLASH_DATA,
+                CMD_POLL_STATUS_SET_PARAMETERS,
+                CMD_SET_GPIO_OUTPUT_VALUES,
+                CMD_SET_SRAM_SETTINGS,
+                CMD_GET_SRAM_SETTINGS,
+                CMD_READ_FLASH_DATA,
+                CMD_WRITE_FLASH_DATA,
+                CMD_RESET_CHIP
+                ):
+                return r
+
+            # Return if ok
+            if r[RESPONSE_STATUS_BYTE] == RESPONSE_RESULT_OK:
+                return r
+            else:
+                if retry < self.cmd_retries:
+                    continue
+                else:
+                    return r
+
+        raise RuntimeError("Command failed.")
+
+
+    def _update_gp_setting_out(self, gp, out):
+        """Update the GP setting (like in SRAM setting) with output values from Set GPIO Output Values command."""
+        if out == True:
+            self.status["GPIO"][gp] = self.status["GPIO"][gp] | GPIO_OUT_VAL_1
+        else:
+            self.status["GPIO"][gp] = self.status["GPIO"][gp] & GPIO_OUT_VAL_0
 
     def _read_flash_raw(self, setting):
         """
@@ -436,36 +447,42 @@ class Device:
 
         return rbuf[0:64]
 
-    def _write_flash_raw(self, setting, data, password: bytes) -> list[int]:
+    def _write_flash_raw(self, setting, data, password: Optional[bytes] = None) -> list[int]:
         """
         Write flash data.
         Data payload does not include command and register bytes.
         
-        If chip is set to PROTECTED mode, the password must be provided. Use the same password which
-        was provided when the chip was set to PROTECTED mode. If the chip is in NON-PROTECTED mode, then
-        the password doesn't matter
+        If chip is set to PROTECTED mode, the password must be provided. The default password is 8 bytes worth of 0's
+        (b'\x00\x00\x00\x00\x00\x00\x00\x00'). 
         """
-        try:
-            self._send_flash_access_password(password)  
-        except RuntimeError as e:
-            raise IncorrectPasswordError()
+
+        write_protection_status = self.get_write_protection_status()
+        if write_protection_status == WriteProtection.LOCKED:
+            raise AssertionError("Flash chip is locked. Cannot write flash data.")
+        if write_protection_status == WriteProtection.PROTECTED and password is None:
+            raise AssertionError("Flash chip is protected. Password required to write flash data.")
+        if password:
+            self._send_flash_access_password(password)
+
         rbuf = self.send_cmd([CMD_WRITE_FLASH_DATA, setting] + data)
         if not rbuf:
             raise ValueError("No response from device")
 
         if rbuf[RESPONSE_STATUS_BYTE] != RESPONSE_RESULT_OK:
-            raise RuntimeError(f"Write flash data command failed with code {rbuf[RESPONSE_STATUS_BYTE]}.")
+            raise RuntimeError(f'Write flash data command failed with code {rbuf[RESPONSE_STATUS_BYTE]}. This driver is dumb AF and could be the '
+                               f'result of an incorrect password. Make sure its right')
 
         return rbuf[0:64]
 
     def _send_flash_access_password(self, password: bytes) -> None:
+        '''Default is 8 bytes of 0's (b'\x00\x00\x00\x00\x00\x00\x00\x00').'''
         if len(password) != 8:
             raise ValueError(f"Expecting an 8-byte password, got {len(password)} bytes." )
         cmd = [CMD_SEND_FLASH_ACCESS_PASSWORD, 0] + list(password)
         rbuf = self.send_cmd(cmd)
 
         if rbuf[RESPONSE_STATUS_BYTE] != RESPONSE_RESULT_OK:
-            raise RuntimeError(f"Write flash data command failed with code {rbuf[RESPONSE_STATUS_BYTE]}.")
+            raise IncorrectPasswordError(f"Failed to set password, with code {rbuf[RESPONSE_STATUS_BYTE]}.")
 
     def read_flash_info(self, raw=False, human=False):
         """ Read flash data.
@@ -2551,14 +2568,3 @@ class Device:
         }
 
         return data
-
-
-if __name__ == '__main__':
-    device = Device(usbserial = '0005490020', VID=0X04D8, PID=0X00dd)
-    device.reset()
-    # pwd_resp = device._send_flash_access_password(b'\x00'*8)  # requires currentpassword to unlock (default is 8 zeroes)
-    device.set_flash_protection(WriteProtection.PROTECTED, b'\x00'*8)  # update protection, can update password
-    # device.update_password(b'\x00'*8, b'\x69'*8)  # update password, can update protection
-    # device.set_vid_pid(0x04D8, 0x00dd, b'\x00'*8)  # update VID and PID, can update password and protection
-    settings = device.get_chip_settings()
-    print(f'Chip settings: {settings}')
