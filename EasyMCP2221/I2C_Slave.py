@@ -1,5 +1,6 @@
 from EasyMCP2221.exceptions import *
 
+
 class I2C_Slave:
     """ EasyMCP2221's I2C slave device.
 

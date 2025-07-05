@@ -1,9 +1,10 @@
 import hid
 import time
-
+from typing import Optional
 from .Constants import *
 from . import I2C_Slave
-from .exceptions import NotAckError, TimeoutError, LowSCLError, LowSDAError
+from .exceptions import NotAckError, TimeoutError, LowSCLError, LowSDAError, IncorrectPasswordError
+
 
 class Device:
     """ Creates a MCP2221(A) device instance.
@@ -179,6 +180,151 @@ class Device:
         # GPIO_poll function has not been used.
         self.poll_data = None
 
+    def get_write_protection_status(self) -> WriteProtection:
+        cdcsec_value = self.get_named_chip_settings(FlashChipSettings.CDCSEC)
+        protection_bits = cdcsec_value & 0b00000011
+        if protection_bits == WriteProtection.UNPROTECTED.value:
+            return WriteProtection.UNPROTECTED
+        elif protection_bits == WriteProtection.PROTECTED.value:
+            return WriteProtection.PROTECTED
+        return WriteProtection.LOCKED
+
+    def get_named_chip_settings(self, setting: FlashChipSettings) -> int: 
+        chip_settings = self.get_all_chip_settings()
+        chip_settings = chip_settings[4:14]
+        return chip_settings[setting.value]
+
+    def get_all_chip_settings(self) -> list[int]:
+        return self._read_flash_raw(FLASH_DATA_CHIP_SETTINGS)
+
+    def get_all_gp_settings(self) -> list[int]:
+        return self._read_flash_raw(FLASH_DATA_GP_SETTINGS)
+    
+    def get_all_sram_settings(self) -> list[int]:
+        '''this shows the same type of info as the chip settings (values may differ), but not all of this is modifiable in sram.
+        Some of it can only be modified in flash. Compare the 'Get SRAM Settings' vs 'Set SRAM Settings' commands.'''
+        sram = self.send_cmd([CMD_GET_SRAM_SETTINGS])
+        if not sram:
+            raise RuntimeError("Failed to read SRAM settings.")
+        return sram
+
+    def set_vid_pid(self, vid: int, pid: int, password: Optional[bytes] = None) -> None:
+        def split_value(value: int) -> tuple[int, int]:
+            '''split a 2 byte value into two, 1 byte blocks (LSB, MSB)'''
+            return value & 0xFF, (value >> 8) & 0xFF
+
+        self.set_flash_chip_settings(FlashChipSettings.LVID, split_value(vid)[0], password)
+        self.set_flash_chip_settings(FlashChipSettings.HVID, split_value(vid)[1], password)
+        self.set_flash_chip_settings(FlashChipSettings.LPID, split_value(pid)[0], password)
+        self.set_flash_chip_settings(FlashChipSettings.HPID, split_value(pid)[1], password)
+        self.reset()
+
+    def set_flash_protection(self, protection: WriteProtection, password: Optional[bytes]= None) -> None:
+        '''Must supply an 8 byte password if already PROTECTED. Use the specifiedpassword for subsequent flash write operations'''
+        chip_settings = self._read_flash_raw(FLASH_DATA_CHIP_SETTINGS)
+        current_cdc_sec_byte = chip_settings[FlashChipSettings.CDCSEC.value]
+        mask_clear_security_bits = 0b11111100
+        new_value = current_cdc_sec_byte & mask_clear_security_bits
+        new_value = new_value | protection.value
+        self.set_flash_chip_settings(FlashChipSettings.CDCSEC, new_value, password)
+        self.reset()
+
+    def set_flash_protection_password(self, old_password: bytes, new_password: bytes) -> None:
+        new_password_list = list(new_password)
+        chip = self._read_flash_raw(FLASH_DATA_CHIP_SETTINGS)
+        chip = chip[4:14]
+        chip = chip + new_password_list
+        self._write_flash_raw(FLASH_DATA_CHIP_SETTINGS, chip, old_password)
+        self.reset()
+
+    def set_flash_chip_settings(self, setting: FlashChipSettings, value: int, password: Optional[bytes] = None) -> None:
+        '''This writes the whole BYTE index of the specified FlashChipSetting, not just a bit, so be careful of overwriting
+        While some byte indexes are concerned with just one setting, others have multiple'''
+        chip = self._read_flash_raw(FLASH_DATA_CHIP_SETTINGS)
+        chip = chip[4:14]
+        chip[setting.value] =  value
+        self._write_flash_raw(FLASH_DATA_CHIP_SETTINGS, chip, password)
+
+    #######################################################################
+    # Flash
+    #######################################################################
+    def save_config(self, password: Optional[bytes] = None) -> None:
+        """
+        Write current status (pin assignments, GPIO output values,
+        DAC reference and value, ADC reference, etc.) to flash memory.
+
+        You can save a new configuration as many times as you wish.
+        That will be the default state at power up.
+
+        Raises:
+            RuntimeError: if command failed.
+            AssertionError: if an accidental flash protection attempt was prevented.
+
+        Example:
+            Set all GPIO pins as digital inputs (high impedance state) at start-up to prevent short circuits
+            while breadboarding.
+
+            >>> mcp.set_pin_function(
+            ...     gp0 = "GPIO_IN",
+            ...     gp1 = "GPIO_IN",
+            ...     gp2 = "GPIO_IN",
+            ...     gp3 = "GPIO_IN")
+            >>> mcp.DAC_config(ref = "OFF")
+            >>> mcp.ADC_config(ref = "VDD")
+            >>> mcp.save_config()
+        """
+        chip = self._read_flash_raw(FLASH_DATA_CHIP_SETTINGS)
+        gp   = self._read_flash_raw(FLASH_DATA_GP_SETTINGS)
+        sram = self.send_cmd([CMD_GET_SRAM_SETTINGS])
+
+        chip = chip[4:14]
+        gp   = gp[4:8]
+        sram = sram[4:26]
+
+        chip.extend([0] * 8) # 8 bytes for writing password that don't come on reading
+
+        if self.debug_messages:
+            print("OLD CHIP:", " ".join("%02x" % i for i in chip))
+
+        chip[FlashChipSettings.CDCSEC]  = sram[SRAM_CHIP_SETTINGS_CDCSEC]
+        chip[FlashChipSettings.CLOCK]   = sram[SRAM_CHIP_SETTINGS_CLOCK]
+        chip[FlashChipSettings.DAC]     = sram[SRAM_CHIP_SETTINGS_DAC]
+        chip[FlashChipSettings.INT_ADC] = sram[SRAM_CHIP_SETTINGS_INT_ADC]
+        chip[FlashChipSettings.LVID]    = sram[SRAM_CHIP_SETTINGS_LVID]
+        chip[FlashChipSettings.HVID]    = sram[SRAM_CHIP_SETTINGS_HVID]
+        chip[FlashChipSettings.LPID]    = sram[SRAM_CHIP_SETTINGS_LPID]
+        chip[FlashChipSettings.HPID]    = sram[SRAM_CHIP_SETTINGS_HPID]
+        chip[FlashChipSettings.USBPWR]  = sram[SRAM_CHIP_SETTINGS_USBPWR]
+        chip[FlashChipSettings.USBMA]   = sram[SRAM_CHIP_SETTINGS_USBMA]
+        chip[FlashChipSettings.PWD1]    = sram[SRAM_CHIP_SETTINGS_PWD1]
+        chip[FlashChipSettings.PWD2]    = sram[SRAM_CHIP_SETTINGS_PWD2]
+        chip[FlashChipSettings.PWD3]    = sram[SRAM_CHIP_SETTINGS_PWD3]
+        chip[FlashChipSettings.PWD4]    = sram[SRAM_CHIP_SETTINGS_PWD4]
+        chip[FlashChipSettings.PWD5]    = sram[SRAM_CHIP_SETTINGS_PWD5]
+        chip[FlashChipSettings.PWD6]    = sram[SRAM_CHIP_SETTINGS_PWD6]
+        chip[FlashChipSettings.PWD7]    = sram[SRAM_CHIP_SETTINGS_PWD7]
+        chip[FlashChipSettings.PWD8]    = sram[SRAM_CHIP_SETTINGS_PWD8]
+
+        if self.debug_messages:
+            print("NEW CHIP:", " ".join("%02x" % i for i in chip))
+            print("OLD GP:", " ".join("%02x" % i for i in gp))
+
+        # Take status instead of SRAM variables because GPIO_write command won't alter SRAM
+        gp[FLASH_GP_SETTINGS_GP0]         = self.status["GPIO"]["gp0"]
+        gp[FLASH_GP_SETTINGS_GP1]         = self.status["GPIO"]["gp1"]
+        gp[FLASH_GP_SETTINGS_GP2]         = self.status["GPIO"]["gp2"]
+        gp[FLASH_GP_SETTINGS_GP3]         = self.status["GPIO"]["gp3"]
+
+        for k in self.unsaved_SRAM:
+            chip[k] = self.unsaved_SRAM[k]
+
+        if self.debug_messages:
+            print("NEW GP:", " ".join("%02x" % i for i in gp))
+    
+
+        self._write_flash_raw(FLASH_DATA_CHIP_SETTINGS, chip, password)
+        self._write_flash_raw(FLASH_DATA_GP_SETTINGS,   gp, password)
+
 
     def __repr__(self):
         import json
@@ -232,6 +378,7 @@ class Device:
                 print("Command re-try", retry)
 
             # Write command
+            command = [REPORT_NUM] + buf + padding
             try:
                 self.hidhandler.write([REPORT_NUM] + buf + padding)
             except OSError:
@@ -290,87 +437,6 @@ class Device:
         else:
             self.status["GPIO"][gp] = self.status["GPIO"][gp] & GPIO_OUT_VAL_0
 
-
-    #######################################################################
-    # Flash
-    #######################################################################
-    def save_config(self):
-        """
-        Write current status (pin assignments, GPIO output values,
-        DAC reference and value, ADC reference, etc.) to flash memory.
-
-        You can save a new configuration as many times as you wish.
-        That will be the default state at power up.
-
-        Raises:
-            RuntimeError: if command failed.
-            AssertionError: if an accidental flash protection attempt was prevented.
-
-        Example:
-            Set all GPIO pins as digital inputs (high impedance state) at start-up to prevent short circuits
-            while breadboarding.
-
-            >>> mcp.set_pin_function(
-            ...     gp0 = "GPIO_IN",
-            ...     gp1 = "GPIO_IN",
-            ...     gp2 = "GPIO_IN",
-            ...     gp3 = "GPIO_IN")
-            >>> mcp.DAC_config(ref = "OFF")
-            >>> mcp.ADC_config(ref = "VDD")
-            >>> mcp.save_config()
-        """
-        chip = self._read_flash_raw(FLASH_DATA_CHIP_SETTINGS)
-        gp   = self._read_flash_raw(FLASH_DATA_GP_SETTINGS)
-        sram = self.send_cmd([CMD_GET_SRAM_SETTINGS])
-
-        chip = chip[4:14]
-        gp   = gp[4:8]
-        sram = sram[4:26]
-
-        chip.extend([0] * 8) # 8 bytes for writing password that don't come on reading
-
-        if self.debug_messages:
-            print("OLD CHIP:", " ".join("%02x" % i for i in chip))
-
-        chip[FLASH_CHIP_SETTINGS_CDCSEC]  = sram[SRAM_CHIP_SETTINGS_CDCSEC]
-        chip[FLASH_CHIP_SETTINGS_CLOCK]   = sram[SRAM_CHIP_SETTINGS_CLOCK]
-        chip[FLASH_CHIP_SETTINGS_DAC]     = sram[SRAM_CHIP_SETTINGS_DAC]
-        chip[FLASH_CHIP_SETTINGS_INT_ADC] = sram[SRAM_CHIP_SETTINGS_INT_ADC]
-        chip[FLASH_CHIP_SETTINGS_LVID]    = sram[SRAM_CHIP_SETTINGS_LVID]
-        chip[FLASH_CHIP_SETTINGS_HVID]    = sram[SRAM_CHIP_SETTINGS_HVID]
-        chip[FLASH_CHIP_SETTINGS_LPID]    = sram[SRAM_CHIP_SETTINGS_LPID]
-        chip[FLASH_CHIP_SETTINGS_HPID]    = sram[SRAM_CHIP_SETTINGS_HPID]
-        chip[FLASH_CHIP_SETTINGS_USBPWR]  = sram[SRAM_CHIP_SETTINGS_USBPWR]
-        chip[FLASH_CHIP_SETTINGS_USBMA]   = sram[SRAM_CHIP_SETTINGS_USBMA]
-        chip[FLASH_CHIP_SETTINGS_PWD1]    = sram[SRAM_CHIP_SETTINGS_PWD1]
-        chip[FLASH_CHIP_SETTINGS_PWD2]    = sram[SRAM_CHIP_SETTINGS_PWD2]
-        chip[FLASH_CHIP_SETTINGS_PWD3]    = sram[SRAM_CHIP_SETTINGS_PWD3]
-        chip[FLASH_CHIP_SETTINGS_PWD4]    = sram[SRAM_CHIP_SETTINGS_PWD4]
-        chip[FLASH_CHIP_SETTINGS_PWD5]    = sram[SRAM_CHIP_SETTINGS_PWD5]
-        chip[FLASH_CHIP_SETTINGS_PWD6]    = sram[SRAM_CHIP_SETTINGS_PWD6]
-        chip[FLASH_CHIP_SETTINGS_PWD7]    = sram[SRAM_CHIP_SETTINGS_PWD7]
-        chip[FLASH_CHIP_SETTINGS_PWD8]    = sram[SRAM_CHIP_SETTINGS_PWD8]
-
-        if self.debug_messages:
-            print("NEW CHIP:", " ".join("%02x" % i for i in chip))
-            print("OLD GP:", " ".join("%02x" % i for i in gp))
-
-        # Take status instead of SRAM variables because GPIO_write command won't alter SRAM
-        gp[FLASH_GP_SETTINGS_GP0]         = self.status["GPIO"]["gp0"]
-        gp[FLASH_GP_SETTINGS_GP1]         = self.status["GPIO"]["gp1"]
-        gp[FLASH_GP_SETTINGS_GP2]         = self.status["GPIO"]["gp2"]
-        gp[FLASH_GP_SETTINGS_GP3]         = self.status["GPIO"]["gp3"]
-
-        for k in self.unsaved_SRAM:
-            chip[k] = self.unsaved_SRAM[k]
-
-        if self.debug_messages:
-            print("NEW GP:", " ".join("%02x" % i for i in gp))
-
-        self._write_flash_raw(FLASH_DATA_CHIP_SETTINGS, chip)
-        self._write_flash_raw(FLASH_DATA_GP_SETTINGS,   gp)
-
-
     def _read_flash_raw(self, setting):
         """
         Read flash data and return a list of bytes.
@@ -382,23 +448,42 @@ class Device:
 
         return rbuf[0:64]
 
-
-    def _write_flash_raw(self, setting, data):
+    def _write_flash_raw(self, setting, data, password: Optional[bytes] = None) -> list[int]:
         """
         Write flash data.
         Data payload does not include command and register bytes.
+        
+        If chip is set to PROTECTED mode, the password must be provided. The default password is 8 bytes worth of 0's
+        (b'\x00\x00\x00\x00\x00\x00\x00\x00'). 
         """
-        # Use hardcoded instead of symbolic constants to prevent errors
-        if setting == FLASH_DATA_CHIP_SETTINGS and (data[0] & 0b11) != 0:
-            raise AssertionError("Chip protection prevented!")
+
+        write_protection_status = self.get_write_protection_status()
+        if write_protection_status == WriteProtection.LOCKED:
+            raise AssertionError("Flash chip is locked. Cannot write flash data.")
+        if write_protection_status == WriteProtection.PROTECTED and password is None:
+            raise AssertionError("Flash chip is protected. Password required to write flash data.")
+        if password:
+            self._send_flash_access_password(password)
 
         rbuf = self.send_cmd([CMD_WRITE_FLASH_DATA, setting] + data)
+        if not rbuf:
+            raise ValueError("No response from device")
 
         if rbuf[RESPONSE_STATUS_BYTE] != RESPONSE_RESULT_OK:
-            raise RuntimeError("Write flash data command failed.")
+            raise RuntimeError(f'Write flash data command failed with code {rbuf[RESPONSE_STATUS_BYTE]}. This driver is dumb AF and could be the '
+                               f'result of an incorrect password. Make sure its right')
 
         return rbuf[0:64]
 
+    def _send_flash_access_password(self, password: bytes) -> None:
+        '''Default is 8 bytes of 0's (b'\x00\x00\x00\x00\x00\x00\x00\x00').'''
+        if len(password) != 8:
+            raise ValueError(f"Expecting an 8-byte password, got {len(password)} bytes." )
+        cmd = [CMD_SEND_FLASH_ACCESS_PASSWORD, 0] + list(password)
+        rbuf = self.send_cmd(cmd)
+
+        if rbuf[RESPONSE_STATUS_BYTE] != RESPONSE_RESULT_OK:
+            raise IncorrectPasswordError(f"Failed to set password, with code {rbuf[RESPONSE_STATUS_BYTE]}.")
 
     def read_flash_info(self, raw=False, human=False):
         """ Read flash data.
@@ -507,45 +592,45 @@ class Device:
         return str
 
     def _parse_chip_settings_struct(self, buf):
-        vid = (buf[FLASH_CHIP_SETTINGS_HVID + FLASH_OFFSET_READ] << 8) \
-            +  buf[FLASH_CHIP_SETTINGS_LVID + FLASH_OFFSET_READ]
+        vid = (buf[FlashChipSettings.HVID + FLASH_OFFSET_READ] << 8) \
+            +  buf[FlashChipSettings.LVID + FLASH_OFFSET_READ]
 
-        pid = (buf[FLASH_CHIP_SETTINGS_HPID + FLASH_OFFSET_READ] << 8) \
-            +  buf[FLASH_CHIP_SETTINGS_LPID + FLASH_OFFSET_READ]
+        pid = (buf[FlashChipSettings.HPID + FLASH_OFFSET_READ] << 8) \
+            +  buf[FlashChipSettings.LPID + FLASH_OFFSET_READ]
 
-        mA = buf[FLASH_CHIP_SETTINGS_USBMA + FLASH_OFFSET_READ] * 2
+        mA = buf[FlashChipSettings.USBMA + FLASH_OFFSET_READ] * 2
 
-        if buf[FLASH_CHIP_SETTINGS_USBPWR + FLASH_OFFSET_READ] & 0b00100000:
+        if buf[FlashChipSettings.USBPWR + FLASH_OFFSET_READ] & 0b00100000:
             pmo_str = "enabled"
         else:
             pmo_str = "disabled"
 
-        if buf[FLASH_CHIP_SETTINGS_CDCSEC + FLASH_OFFSET_READ] & CDCSEC_CDCSNEN:
+        if buf[FlashChipSettings.CDCSEC + FLASH_OFFSET_READ] & CDCSEC_CDCSNEN:
             cdc_str = "enabled"
         else:
             cdc_str = "disabled"
 
-        ide_bits = (buf[FLASH_CHIP_SETTINGS_INT_ADC + FLASH_OFFSET_READ] & 0b01100000) >> 5
+        ide_bits = (buf[FlashChipSettings.INT_ADC + FLASH_OFFSET_READ] & 0b01100000) >> 5
         ide_str = ("both"    if ide_bits == 3 else
                    "falling" if ide_bits == 2 else
                    "rising"  if ide_bits == 1 else
                    "none")
 
-        ADCREF = (buf[FLASH_CHIP_SETTINGS_INT_ADC + FLASH_OFFSET_READ] & 0b00000100) >> 2
-        ADCVRM = (buf[FLASH_CHIP_SETTINGS_INT_ADC + FLASH_OFFSET_READ] & 0b00011000) >> 3
+        ADCREF = (buf[FlashChipSettings.INT_ADC + FLASH_OFFSET_READ] & 0b00000100) >> 2
+        ADCVRM = (buf[FlashChipSettings.INT_ADC + FLASH_OFFSET_READ] & 0b00011000) >> 3
         adc_ref_str = ("VDD"    if ADCREF == 0 else
                        "1.024V" if ADCVRM == 0b01 else
                        "2.048V" if ADCVRM == 0b10 else
                        "4.096V" if ADCVRM == 0b11 else
                        "OFF")
 
-        CLKDC  = (buf[FLASH_CHIP_SETTINGS_CLOCK + FLASH_OFFSET_READ] & 0b00011000) >> 3
+        CLKDC  = (buf[FlashChipSettings.CLOCK + FLASH_OFFSET_READ] & 0b00011000) >> 3
         clk_dc_str = (75 if CLKDC == 0b11 else
                       50 if CLKDC == 0b10 else
                       25 if CLKDC == 0b01 else
                       0)
 
-        CLKDIV = (buf[FLASH_CHIP_SETTINGS_CLOCK + FLASH_OFFSET_READ] & 0b00000111) >> 0
+        CLKDIV = (buf[FlashChipSettings.CLOCK + FLASH_OFFSET_READ] & 0b00000111) >> 0
         clk_freq_str = ("375kHz" if CLKDIV == 0b111 else
                         "750kHz" if CLKDIV == 0b110 else
                         "1.5MHz" if CLKDIV == 0b101 else
@@ -555,15 +640,15 @@ class Device:
                         "24MHz"  if CLKDIV == 0b001 else
                         "reserved")
 
-        DACREF = (buf[FLASH_CHIP_SETTINGS_DAC + FLASH_OFFSET_READ] & 0b00100000) >> 5
-        DACVRM = (buf[FLASH_CHIP_SETTINGS_DAC + FLASH_OFFSET_READ] & 0b11000000) >> 6
+        DACREF = (buf[FlashChipSettings.DAC + FLASH_OFFSET_READ] & 0b00100000) >> 5
+        DACVRM = (buf[FlashChipSettings.DAC + FLASH_OFFSET_READ] & 0b11000000) >> 6
         dac_ref_str = ("VDD"    if DACREF == 0 else
                        "1.024V" if DACVRM == 0b01 else
                        "2.048V" if DACVRM == 0b10 else
                        "4.096V" if DACVRM == 0b11 else
                        "OFF")
 
-        DACVAL = (buf[FLASH_CHIP_SETTINGS_DAC + FLASH_OFFSET_READ] & 0b00011111) >> 0
+        DACVAL = (buf[FlashChipSettings.DAC + FLASH_OFFSET_READ] & 0b00011111) >> 0
 
 
         data = {
@@ -2352,14 +2437,14 @@ class Device:
             >>> mcp.reset()
         """
         chip_settings = self._read_flash_raw(FLASH_DATA_CHIP_SETTINGS)
-        USBPWRATTR = chip_settings[FLASH_CHIP_SETTINGS_USBPWR + FLASH_OFFSET_READ]
+        USBPWRATTR = chip_settings[FlashChipSettings.USBPWR + FLASH_OFFSET_READ]
 
         if enable:
             USBPWRATTR |= 0b00100000
         else:
             USBPWRATTR &= 0b11011111
 
-        self.unsaved_SRAM[FLASH_CHIP_SETTINGS_USBPWR] = USBPWRATTR
+        self.unsaved_SRAM[FlashChipSettings.USBPWR] = USBPWRATTR
 
 
     def enable_cdc_serial(self, enable=True):
@@ -2411,14 +2496,14 @@ class Device:
 
         """
         chip_settings = self._read_flash_raw(FLASH_DATA_CHIP_SETTINGS)
-        cdcsec = chip_settings[FLASH_CHIP_SETTINGS_CDCSEC + FLASH_OFFSET_READ]
+        cdcsec = chip_settings[FlashChipSettings.CDCSEC + FLASH_OFFSET_READ]
 
         if enable:
             cdcsec |= CDCSEC_CDCSNEN
         else:
             cdcsec &= (~CDCSEC_CDCSNEN & 0xFF)
 
-        self.unsaved_SRAM[FLASH_CHIP_SETTINGS_CDCSEC] = cdcsec
+        self.unsaved_SRAM[FlashChipSettings.CDCSEC] = cdcsec
 
 
     #######################################################################

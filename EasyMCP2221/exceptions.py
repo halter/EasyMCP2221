@@ -50,3 +50,6 @@ class LowSDAError(Exception):
         MCP2221's I2C engine cannot solve this problem. You can either manually clock the
         bus using any GPIO line, or cycle the power supply.
     """
+
+class IncorrectPasswordError(Exception):
+    pass
