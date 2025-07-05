@@ -1,10 +1,11 @@
 import hid
 import time
-
-from Constants import *
-from I2C_Slave import I2C_Slave
-from exceptions import NotAckError, TimeoutError, LowSCLError, LowSDAError, IncorrectPasswordError
 from typing import Optional
+from .Constants import *
+from . import I2C_Slave
+from .exceptions import NotAckError, TimeoutError, LowSCLError, LowSDAError, IncorrectPasswordError
+
+
 class Device:
     """ Creates a MCP2221(A) device instance.
 
