@@ -195,9 +195,11 @@ class Device:
         return chip_settings[setting.value]
 
     def get_all_chip_settings(self) -> list[int]:
+        ''' Returns the response structure in table 3-5 (page 27) in the MCP2221 datasheet'''
         return self._read_flash_raw(FLASH_DATA_CHIP_SETTINGS)
 
     def get_all_gp_settings(self) -> list[int]:
+        ''' Returns the response structure in table 3-6 (page 29) in the MCP2221 datasheet'''
         return self._read_flash_raw(FLASH_DATA_GP_SETTINGS)
     
     def get_all_sram_settings(self) -> list[int]:
@@ -220,7 +222,8 @@ class Device:
         self.reset()
 
     def set_flash_protection(self, protection: WriteProtection, password: Optional[bytes]= None) -> None:
-        '''Must supply an 8 byte password if already PROTECTED. Use the specifiedpassword for subsequent flash write operations'''
+        '''Must supply an 8 byte password if already PROTECTED. Use the specified password for subsequent flash write operations.
+        Factory default password is 8 bytes of 0's (b'\x00\x00\x00\x00\x00\x00\x00\x00').'''
         chip_settings = self._read_flash_raw(FLASH_DATA_CHIP_SETTINGS)
         current_cdc_sec_byte = chip_settings[FlashChipSettings.CDCSEC.value]
         mask_clear_security_bits = 0b11111100
